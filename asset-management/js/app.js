@@ -3,7 +3,7 @@
    ============================================================ */
 
 const S = () => Store.state;
-const me = () => S().users.find((u) => u.id === S().currentUserId) || null;
+const me = () => S().users.find((u) => u.id === S().currentUserId && u.active !== false) || null;
 const can = (perm) => !!me() && ROLES[me().role].can.includes(perm);
 const userById = (id) => S().users.find((u) => u.id === id);
 const nameOf = (id) => userById(id)?.name || '—';
@@ -71,14 +71,14 @@ const NAV = {
   admin:   [['dashboard', 'Dashboard'], ['approvals', 'Approvals'], ['assets', 'Assets'], ['requests', 'Requests'], ['pos', 'Purchase Orders'], ['users', 'Users']],
 };
 
-const VIEWS = { dashboard: viewDashboard, approvals: viewApprovals, assets: viewAssets, requests: viewRequests, pos: viewPOs, users: viewUsers };
+const VIEWS = { profile: viewProfile, dashboard: viewDashboard, approvals: viewApprovals, assets: viewAssets, requests: viewRequests, pos: viewPOs, users: viewUsers };
 
 function route(scroll = true) {
   const u = me();
   const page = (location.hash.replace(/^#\/?/, '') || 'dashboard').split('?')[0];
   const root = document.getElementById('app');
   if (!u) { root.innerHTML = viewLanding(); return; }
-  const allowed = NAV[u.role].map(([k]) => k);
+  const allowed = [...NAV[u.role].map(([k]) => k), 'profile'];
   const key = allowed.includes(page) ? page : 'dashboard';
   root.innerHTML = shell(key, VIEWS[key](u));
   if (scroll) window.scrollTo(0, 0);
@@ -96,8 +96,8 @@ function shell(active, content) {
       <div class="nav-user">
         <span class="role-pill">${ROLES[u.role].label}</span>
         <span class="name" style="font-size:14px">${esc(u.name)}</span>
-        <div class="avatar" title="${esc(u.email)}">${initials(u.name)}</div>
-        <button class="btn btn-ghost btn-sm" data-action="logout">Switch</button>
+        <a class="avatar ${active === 'profile' ? 'avatar-active' : ''}" href="#profile" title="My profile (${esc(u.email)})">${initials(u.name)}</a>
+        <button class="btn btn-ghost btn-sm" data-action="logout">Sign out</button>
       </div>
     </div></header>
     <main><div class="container">${content}</div></main>`;
@@ -107,18 +107,21 @@ function shell(active, content) {
    Landing — role picker, styled like a download page
    ============================================================ */
 function viewLanding() {
-  const roleCard = (role, title, desc, bullets, featured) => {
-    const people = S().users.filter((u) => u.role === role);
+  const info = {
+    user:    ['User', 'For employees who need equipment.', ['See assets assigned to you', 'Request new equipment', 'Fill purchase orders', 'Track approval status']],
+    manager: ['Manager', 'For team leads who approve spend.', ['Approve team requests', `Approve POs up to ${money(PO_ADMIN_THRESHOLD)}`, 'View team assets', 'Raise your own POs']],
+    admin:   ['Admin', 'For IT and procurement owners.', ['Manage the full inventory', `Final approval over ${money(PO_ADMIN_THRESHOLD)}`, 'Fulfil requests and receive POs', 'Add users, reset passwords']],
+  };
+  const demoCard = (acct) => {
+    const [title, desc, bullets] = info[acct.role];
     return `
-      <div class="role-card ${featured ? 'featured' : ''}">
-        <div class="role-icon">${ICON[role]}</div>
+      <div class="role-card ${acct.role === 'user' ? 'featured' : ''}">
+        <div class="role-icon">${ICON[acct.role]}</div>
         <h3>${title}</h3>
         <p>${desc}</p>
         <ul>${bullets.map((b) => `<li>${b}</li>`).join('')}</ul>
-        <select id="pick-${role}" aria-label="Choose ${title} account">
-          ${people.map((p) => `<option value="${p.id}">${esc(p.name)} · ${esc(p.dept)}</option>`).join('')}
-        </select>
-        <button class="btn ${featured ? 'btn-primary' : ''} btn-lg" data-action="login" data-role="${role}">Continue as ${title} →</button>
+        <dl class="cred"><dt>Email</dt><dd class="mono">${esc(acct.email)}</dd><dt>Password</dt><dd class="mono">${esc(acct.password)}</dd></dl>
+        <button class="btn ${acct.role === 'user' ? 'btn-primary' : ''} btn-lg" data-action="demo-login" data-email="${esc(acct.email)}" data-password="${esc(acct.password)}">Sign in as ${title} →</button>
       </div>`;
   };
   return `
@@ -131,15 +134,22 @@ function viewLanding() {
       <section class="hero">
         <span class="eyebrow"><span class="dot"></span>Assets · Requests · Purchase orders</span>
         <h1>Every asset tracked.<br><em>Every approval</em> in one click.</h1>
-        <p class="lead">Request equipment, raise purchase orders and route them through approvals — with a clear view for users, managers and admins.</p>
+        <p class="lead">Request equipment, raise purchase orders and route them through approvals, with the right view for users, managers and admins.</p>
       </section>
 
-      <section class="role-grid">
-        ${roleCard('user', 'User', 'For employees who need equipment.', ['See assets assigned to you', 'Request new equipment', 'Fill purchase orders', 'Track approval status'], true)}
-        ${roleCard('manager', 'Manager', 'For team leads who approve spend.', ['Approve team requests', `Approve POs (up to ${money(PO_ADMIN_THRESHOLD)})`, 'View team assets', 'Raise your own POs'], false)}
-        ${roleCard('admin', 'Admin', 'For IT / procurement owners.', ['Manage full inventory', `Final approval over ${money(PO_ADMIN_THRESHOLD)}`, 'Fulfil requests & receive POs', 'Manage users and roles'], false)}
+      <section class="login-card card" aria-labelledby="login-title">
+        <h2 id="login-title">Sign in</h2>
+        <p class="hint">Use your work email. Ask an admin if you need an account or a password reset.</p>
+        <form class="form" id="login-form" novalidate>
+          <label>Email<input id="login-email" name="email" type="email" autocomplete="username" required placeholder="you@company.com"></label>
+          <label>Password<input id="login-password" name="password" type="password" autocomplete="current-password" required placeholder="••••••••"></label>
+          <p class="error-text" id="login-error" role="alert" hidden></p>
+          <button class="btn btn-primary btn-lg" type="submit">Sign in</button>
+        </form>
       </section>
-      <p class="fine">Demo mode — data is stored in your browser. Pick any account to explore.</p>
+
+      <div class="section-title" style="margin-top:72px"><h2>Try a demo account</h2><p>One sign-in for each role. Every other sample person uses the same password as their role.</p></div>
+      <section class="role-grid" style="margin-top:0">${DEMO_ACCOUNTS.map(demoCard).join('')}</section>
 
       <div class="section-title"><h2>How approvals flow</h2><p>One pipeline for equipment requests and purchase orders.</p></div>
       <section class="flow">
@@ -149,7 +159,38 @@ function viewLanding() {
         <div class="flow-step"><div class="n">4</div><h4>Fulfil</h4><p>Admin assigns stock, or orders and receives it into inventory.</p></div>
       </section>
     </div></main>
-    <footer class="footer"><div class="container"><span>© ${new Date().getFullYear()} AssetFlow</span><span>Asset management · Purchase orders · Approvals</span></div></footer>`;
+    <footer class="footer"><div class="container"><span>© ${new Date().getFullYear()} AssetFlow</span><span>Demo data is stored in this browser only.</span></div></footer>`;
+}
+
+/* ============================================================
+   Profile — every role
+   ============================================================ */
+function viewProfile(u) {
+  const mine = S().assets.filter((a) => a.assignedTo === u.id);
+  const team = S().users.filter((x) => x.managerId === u.id);
+  return `
+    <div class="page-head"><div><h1>${esc(u.name)}</h1><p>${ROLES[u.role].label} · ${esc(u.dept)}</p></div></div>
+    <div class="grid-2">
+      <div style="display:grid;gap:16px;align-content:start">
+        <div class="card"><div class="card-head"><h3>Account</h3></div><div class="card-body">
+          <dl class="kv" style="margin:0"><dt>Email</dt><dd>${esc(u.email)}</dd><dt>Role</dt><dd><span class="role-pill">${ROLES[u.role].label}</span></dd>
+            <dt>Department</dt><dd>${esc(u.dept)}</dd><dt>Reports to</dt><dd>${esc(nameOf(u.managerId))}</dd>
+            ${team.length ? `<dt>Team</dt><dd>${team.map((t) => esc(t.name)).join(', ')}</dd>` : ''}</dl>
+        </div></div>
+        <div class="card"><div class="card-head"><h3>Assets assigned to you</h3><span class="hint">${mine.length}</span></div>
+          <div class="list">${mine.map((a) => `<div class="list-item"><div class="grow"><strong>${esc(a.name)}</strong><div class="meta mono">${esc(a.tag)} · ${esc(a.category)}</div></div>${badge(a.status)}</div>`).join('') || '<div class="empty">No assets assigned yet.</div>'}</div></div>
+      </div>
+      <div class="card" style="align-self:start"><div class="card-head"><h3>Change password</h3></div><div class="card-body">
+        <form class="form" id="password-form" novalidate>
+          <label>Current password<input id="pw-current" name="current" type="password" autocomplete="current-password" required></label>
+          <label>New password<input id="pw-new" name="next" type="password" autocomplete="new-password" required minlength="${MIN_PASSWORD}"></label>
+          <label>Confirm new password<input id="pw-confirm" name="confirm" type="password" autocomplete="new-password" required></label>
+          <p class="hint">At least ${MIN_PASSWORD} characters.</p>
+          <p class="error-text" id="pw-error" role="alert" hidden></p>
+          <button class="btn btn-primary" type="submit">Update password</button>
+        </form>
+      </div></div>
+    </div>`;
 }
 
 /* ============================================================
@@ -411,11 +452,12 @@ function viewUsers() {
   return `
     <div class="page-head"><div><h1>Users</h1><p>${users.length} people · roles control what each person can see and approve.</p></div>
       <button class="btn btn-primary" data-action="new-user">+ Add user</button></div>
-    <div class="card table-wrap"><table><thead><tr><th>Name</th><th>Department</th><th>Role</th><th>Manager</th><th>Assets</th><th></th></tr></thead><tbody>
+    <div class="card table-wrap"><table><thead><tr><th>Name</th><th>Department</th><th>Role</th><th>Manager</th><th>Assets</th><th>Status</th><th></th></tr></thead><tbody>
       ${users.map((u) => `<tr>
         <td><div style="display:flex;gap:10px;align-items:center"><div class="avatar">${initials(u.name)}</div><div><strong>${esc(u.name)}</strong><div class="sub">${esc(u.email)}</div></div></div></td>
         <td>${esc(u.dept)}</td><td><span class="role-pill">${ROLES[u.role].label}</span></td>
         <td>${esc(nameOf(u.managerId))}</td><td>${S().assets.filter((a) => a.assignedTo === u.id).length}</td>
+        <td><span class="badge ${u.active === false ? 'b-bad' : 'b-ok'}">${u.active === false ? 'Disabled' : 'Active'}</span></td>
         <td class="actions"><button class="btn btn-sm" data-action="edit-user" data-id="${u.id}">Edit</button></td>
       </tr>`).join('')}</tbody></table></div>
     <div class="section-title" style="margin-top:56px;text-align:left"><h2 style="font-size:24px">Permission matrix</h2></div>
@@ -431,6 +473,8 @@ function userForm(u = {}) {
       <label>Email<input name="email" type="email" required value="${esc(u.email)}"></label></div>
     <div class="row"><label>Department<input name="dept" required value="${esc(u.dept)}"></label>
       <label>Role<select name="role">${Object.entries(ROLES).map(([k, r]) => `<option value="${k}" ${k === u.role ? 'selected' : ''}>${r.label}</option>`).join('')}</select></label></div>
+    <div class="row"><label>${u.id ? 'New password' : 'Password'}<input name="password" type="password" autocomplete="new-password" ${u.id ? '' : 'required'} minlength="${MIN_PASSWORD}" placeholder="${u.id ? 'Leave blank to keep current' : `At least ${MIN_PASSWORD} characters`}"></label>
+      <label>Status<select name="active"><option value="true" ${u.active !== false ? 'selected' : ''}>Active</option><option value="false" ${u.active === false ? 'selected' : ''}>Disabled (can't sign in)</option></select></label></div>
     <label>Reports to<select name="managerId"><option value="">— None —</option>${managers.map((m) => `<option value="${m.id}" ${m.id === u.managerId ? 'selected' : ''}>${esc(m.name)} (${ROLES[m.role].label})</option>`).join('')}</select></label>
   </form>`;
 }
@@ -520,14 +564,47 @@ const noteValue = () => document.getElementById('decision-note')?.value.trim() |
 /* ============================================================
    Actions
    ============================================================ */
+const auth = { failures: 0, lockedUntil: 0 };
+
 const ACTIONS = {
-  login(el) {
-    S().currentUserId = document.getElementById(`pick-${el.dataset.role}`).value;
+  async login() {
+    const email = document.getElementById('login-email').value.trim().toLowerCase();
+    const password = document.getElementById('login-password').value;
+    const showError = (msg) => { const e = document.getElementById('login-error'); e.textContent = msg; e.hidden = false; };
+    if (Date.now() < auth.lockedUntil) return showError(`Too many attempts. Try again in ${Math.ceil((auth.lockedUntil - Date.now()) / 1000)} seconds.`);
+    if (!email || !password) return showError('Enter your email and password.');
+    const user = S().users.find((u) => u.email.toLowerCase() === email);
+    if (!user || !(await checkPassword(user, password))) {
+      auth.failures += 1;
+      if (auth.failures >= 5) { auth.lockedUntil = Date.now() + 30000; auth.failures = 0; }
+      return showError('That email and password don\'t match. Check both and try again.');
+    }
+    if (user.active === false) return showError('This account is disabled. Ask an admin to turn it back on.');
+    auth.failures = 0;
+    S().currentUserId = user.id;
     Store.save();
     location.hash = '#dashboard';
     route();
+    toast(`Signed in as ${user.name}`);
   },
-  logout() { S().currentUserId = null; Store.save(); location.hash = ''; route(); },
+  'demo-login'(el) {
+    document.getElementById('login-email').value = el.dataset.email;
+    document.getElementById('login-password').value = el.dataset.password;
+    ACTIONS.login();
+  },
+  async 'change-password'() {
+    const u = me();
+    const cur = document.getElementById('pw-current').value;
+    const next = document.getElementById('pw-new').value;
+    const confirmPw = document.getElementById('pw-confirm').value;
+    const showError = (msg) => { const e = document.getElementById('pw-error'); e.textContent = msg; e.hidden = false; };
+    if (!(await checkPassword(u, cur))) return showError('Your current password is wrong.');
+    if (next.length < MIN_PASSWORD) return showError(`Use at least ${MIN_PASSWORD} characters for the new password.`);
+    if (next !== confirmPw) return showError('The new passwords don\'t match.');
+    await setPassword(u, next);
+    commit('Password updated');
+  },
+  logout() { S().currentUserId = null; Store.save(); location.hash = ''; route(); toast('Signed out'); },
   reset() {
     openModal('Reset demo data?', '<p style="margin:0;color:var(--muted)">All assets, requests, purchase orders and users go back to the sample data. This can\'t be undone.</p>',
       '<button class="btn" data-action="close-modal">Cancel</button><button class="btn btn-bad" data-action="confirm-reset">Reset data</button>');
@@ -665,17 +742,29 @@ const ACTIONS = {
     const u = userById(el.dataset.id);
     openModal(`Edit ${u.name}`, userForm(u), `<button class="btn" data-action="close-modal">Cancel</button><button class="btn btn-primary" data-action="save-user" data-id="${u.id}">Save changes</button>`);
   },
-  'save-user'(el) {
+  async 'save-user'(el) {
     const d = formData('user-form'); if (!d) return;
+    const id = el.dataset.id;
+    const { password } = d;
+    delete d.password;
+    d.email = d.email.trim().toLowerCase();
     d.managerId = d.managerId || null;
-    if (el.dataset.id) {
-      if (el.dataset.id === me().id && d.role !== 'admin') { toast('You can\'t remove your own admin role'); return; }
-      Object.assign(userById(el.dataset.id), d);
-      commit('User updated');
+    d.active = d.active === 'true';
+    if (S().users.some((u) => u.email.toLowerCase() === d.email && u.id !== id)) { toast('Another user already has that email'); return; }
+    if (password && password.length < MIN_PASSWORD) { toast(`Passwords need at least ${MIN_PASSWORD} characters`); return; }
+    if (id) {
+      if (id === me().id && d.role !== 'admin') { toast('You can\'t remove your own admin role'); return; }
+      if (id === me().id && !d.active) { toast('You can\'t disable your own account'); return; }
+      const user = userById(id);
+      Object.assign(user, d);
+      if (password) await setPassword(user, password);
+      commit(password ? 'User updated and password reset' : 'User updated');
     } else {
       S().counters.user += 1;
-      S().users.push({ id: `u${S().counters.user}`, ...d });
-      commit('User added');
+      const user = { id: `u${S().counters.user}`, ...d };
+      await setPassword(user, password);
+      S().users.push(user);
+      commit(`${user.name} can now sign in`);
     }
   },
 };
@@ -709,6 +798,12 @@ document.addEventListener('input', (e) => {
     again?.focus();
     if (pos != null && again?.setSelectionRange) again.setSelectionRange(pos, pos);
   }
+});
+
+document.addEventListener('submit', (e) => {
+  e.preventDefault();
+  if (e.target.id === 'login-form') ACTIONS.login();
+  if (e.target.id === 'password-form') ACTIONS['change-password']();
 });
 
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });

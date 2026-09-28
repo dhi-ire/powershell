@@ -3,7 +3,7 @@
    Swap this file for real API calls when a backend exists.
    ============================================================ */
 
-const STORAGE_KEY = 'assetflow.v1';
+const STORAGE_KEY = 'assetflow.v2';
 
 /* Roles & permissions — single source of truth for access rules. */
 const ROLES = {
@@ -33,6 +33,15 @@ const ROLES = {
   },
 };
 
+/* Demo sign-ins shown on the login page (passwords are stored only as salted hashes). */
+const DEMO_ACCOUNTS = [
+  { role: 'user',    email: 'priya@company.com', password: 'User@123' },
+  { role: 'manager', email: 'marco@company.com', password: 'Manager@123' },
+  { role: 'admin',   email: 'aisha@company.com', password: 'Admin@123' },
+];
+
+const MIN_PASSWORD = 8;
+
 /* POs above this total need a second (admin) approval. */
 const PO_ADMIN_THRESHOLD = 5000;
 
@@ -48,12 +57,18 @@ const daysAgo = (d) => new Date(Date.now() - d * 864e5).toISOString();
 function seed() {
   return {
     users: [
-      { id: 'u1', name: 'Aisha Khan',    email: 'aisha@company.com', role: 'admin',   dept: 'IT',          managerId: null },
-      { id: 'u2', name: 'Marco Rossi',   email: 'marco@company.com', role: 'manager', dept: 'Engineering', managerId: 'u1' },
-      { id: 'u3', name: 'Priya Sharma',  email: 'priya@company.com', role: 'user',    dept: 'Engineering', managerId: 'u2' },
-      { id: 'u4', name: 'Liam O\'Brien', email: 'liam@company.com',  role: 'user',    dept: 'Engineering', managerId: 'u2' },
-      { id: 'u5', name: 'Sara Lee',      email: 'sara@company.com',  role: 'manager', dept: 'Sales',       managerId: 'u1' },
-      { id: 'u6', name: 'Tom Becker',    email: 'tom@company.com',   role: 'user',    dept: 'Sales',       managerId: 'u5' },
+      { id: 'u1', name: 'Aisha Khan',    email: 'aisha@company.com', role: 'admin',   dept: 'IT',          managerId: null,
+        active: true, salt: '2dba141f7f69100c', passwordHash: 'd3b01f767a2ee1abf14eee435a880d681e78a80c31a8b4fea12b5a83395c08dc' },
+      { id: 'u2', name: 'Marco Rossi',   email: 'marco@company.com', role: 'manager', dept: 'Engineering', managerId: 'u1',
+        active: true, salt: 'd2afb588bbe90cbc', passwordHash: '05be8b07f7b22e49ae0e8b92588acac164ddb67ab40b470f118773f261fbeda0' },
+      { id: 'u3', name: 'Priya Sharma',  email: 'priya@company.com', role: 'user',    dept: 'Engineering', managerId: 'u2',
+        active: true, salt: 'e0f74e547d817b04', passwordHash: 'd6014622c562adc30d8b4a463d1dc253446dd599d4d5ad6375861c6bf61a9923' },
+      { id: 'u4', name: 'Liam O\'Brien', email: 'liam@company.com',  role: 'user',    dept: 'Engineering', managerId: 'u2',
+        active: true, salt: '80303b51015ae74f', passwordHash: '0ab68cdd27e8e4a9cfa7b0e6ef6bdcb2cec043fbc15448259f02c6988470c9fe' },
+      { id: 'u5', name: 'Sara Lee',      email: 'sara@company.com',  role: 'manager', dept: 'Sales',       managerId: 'u1',
+        active: true, salt: 'dd6201ef0b102cb0', passwordHash: '9cc5e77b6feed312e9d88b24f4fe015ba00c0c1b45e80f50003db2f461e6babb' },
+      { id: 'u6', name: 'Tom Becker',    email: 'tom@company.com',   role: 'user',    dept: 'Sales',       managerId: 'u5',
+        active: true, salt: 'b95dbfadc18b7234', passwordHash: 'eaef14fc17898cb4cfdee8ecd9355737306b551b0ee7f4b372f9a650fe11e568' },
     ],
     assets: [
       { id: 'a1', tag: 'AST-1001', name: 'MacBook Pro 14"',     category: 'Laptop',     serial: 'C02XK1', status: 'Assigned',    assignedTo: 'u3', location: 'Dublin HQ', cost: 2399, purchaseDate: '2025-02-11' },
@@ -121,6 +136,27 @@ const Store = {
     return `${prefix}-${this.state.counters[kind]}`;
   },
 };
+
+/* ---------- Auth helpers ---------- */
+/* Salted SHA-256. Fine for a browser demo; a real deployment must check passwords on a server. */
+async function hashPassword(salt, password) {
+  const bytes = new TextEncoder().encode(`${salt}:${password}`);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function newSalt() {
+  return [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function setPassword(user, password) {
+  user.salt = newSalt();
+  user.passwordHash = await hashPassword(user.salt, password);
+}
+
+async function checkPassword(user, password) {
+  return !!user.passwordHash && (await hashPassword(user.salt, password)) === user.passwordHash;
+}
 
 /* ---------- Helpers ---------- */
 const uid = () => Math.random().toString(36).slice(2, 10);

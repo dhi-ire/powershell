@@ -5,6 +5,27 @@ orders and routing requests through approvals. Open `index.html` in a browser â€
 no build step. Demo data is stored in `localStorage` (use **Reset demo data** on
 the landing page to start over).
 
+## Sign in
+
+Everyone signs in with their own email and password. Demo accounts:
+
+| Role    | Email               | Password      |
+|---------|---------------------|---------------|
+| User    | priya@company.com   | `User@123`    |
+| Manager | marco@company.com   | `Manager@123` |
+| Admin   | aisha@company.com   | `Admin@123`   |
+
+The other sample people use their role's password (e.g. liam@company.com / `User@123`).
+
+- Admins add users with a starting password, reset passwords, change roles and
+  disable accounts (disabled accounts can't sign in). Admins can't demote or
+  disable themselves.
+- Every user can change their own password on the **Profile** page (click the avatar).
+- Five wrong passwords in a row lock sign-in for 30 seconds.
+- Passwords are stored as salted SHA-256 hashes. This is demo-grade only: with
+  no server, anyone with browser access can edit the stored data. A real
+  deployment needs server-side authentication.
+
 ## Structure
 
 ```
