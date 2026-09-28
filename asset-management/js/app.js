@@ -88,10 +88,10 @@ function shell(active, content) {
   const u = me();
   const q = myQueue(u).total;
   const links = NAV[u.role].map(([k, label]) =>
-    `<a href="#/${k}" class="${k === active ? 'active' : ''}">${label}${k === 'approvals' && q ? `<span class="count">${q}</span>` : ''}</a>`).join('');
+    `<a href="#${k}" class="${k === active ? 'active' : ''}">${label}${k === 'approvals' && q ? `<span class="count">${q}</span>` : ''}</a>`).join('');
   return `
     <header class="nav"><div class="container nav-inner">
-      <a class="logo" href="#/dashboard"><span class="logo-mark">A</span>AssetFlow</a>
+      <a class="logo" href="#dashboard"><span class="logo-mark">A</span>AssetFlow</a>
       <nav class="nav-links">${links}</nav>
       <div class="nav-user">
         <span class="role-pill">${ROLES[u.role].label}</span>
@@ -123,7 +123,7 @@ function viewLanding() {
   };
   return `
     <header class="nav"><div class="container nav-inner">
-      <a class="logo" href="#/"><span class="logo-mark">A</span>AssetFlow</a>
+      <a class="logo" href="#"><span class="logo-mark">A</span>AssetFlow</a>
       <nav class="nav-links"></nav>
       <button class="btn btn-ghost btn-sm" data-action="reset">Reset demo data</button>
     </div></header>
@@ -178,7 +178,7 @@ function viewDashboard(u) {
          <button class="btn btn-primary" data-action="new-request">+ Request equipment</button>
          <button class="btn" data-action="new-po">+ Fill purchase order</button>
        </div></div>`
-    : `<div class="card"><div class="card-head"><h3>Waiting on you</h3><a class="btn btn-sm" href="#/approvals">Open inbox</a></div>
+    : `<div class="card"><div class="card-head"><h3>Waiting on you</h3><a class="btn btn-sm" href="#approvals">Open inbox</a></div>
          <div class="list">${queueList(q, 5) || '<div class="empty"><div class="big">✓</div>All caught up</div>'}</div></div>`;
 
   return `
@@ -524,11 +524,15 @@ const ACTIONS = {
   login(el) {
     S().currentUserId = document.getElementById(`pick-${el.dataset.role}`).value;
     Store.save();
-    location.hash = '#/dashboard';
+    location.hash = '#dashboard';
     route();
   },
-  logout() { S().currentUserId = null; Store.save(); location.hash = '#/'; route(); },
-  reset() { if (confirm('Reset all demo data?')) { Store.reset(); route(); toast('Demo data reset'); } },
+  logout() { S().currentUserId = null; Store.save(); location.hash = ''; route(); },
+  reset() {
+    openModal('Reset demo data?', '<p style="margin:0;color:var(--muted)">All assets, requests, purchase orders and users go back to the sample data. This can\'t be undone.</p>',
+      '<button class="btn" data-action="close-modal">Cancel</button><button class="btn btn-bad" data-action="confirm-reset">Reset data</button>');
+  },
+  'confirm-reset'() { Store.reset(); commit('Demo data reset'); },
   'close-modal': closeModal,
 
   /* Requests */
@@ -665,7 +669,7 @@ const ACTIONS = {
     const d = formData('user-form'); if (!d) return;
     d.managerId = d.managerId || null;
     if (el.dataset.id) {
-      if (el.dataset.id === me().id && d.role !== 'admin' && !confirm('You are removing your own admin role. Continue?')) return;
+      if (el.dataset.id === me().id && d.role !== 'admin') { toast('You can\'t remove your own admin role'); return; }
       Object.assign(userById(el.dataset.id), d);
       commit('User updated');
     } else {

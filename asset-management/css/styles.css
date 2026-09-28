@@ -21,6 +21,7 @@
   --radius: 18px;
   --radius-sm: 12px;
   --shadow: 0 20px 60px -20px rgba(0, 0, 0, 0.6);
+  color-scheme: dark;
   --font: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
 }
 
@@ -43,7 +44,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .container { width: 100%; max-width: 1180px; margin: 0 auto; padding: 0 24px; }
 
 .nav {
-  position: sticky; top: 0; z-index: 20;
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20;
   backdrop-filter: blur(14px);
   background: rgba(10, 10, 11, 0.72);
   border-bottom: 1px solid var(--border);
