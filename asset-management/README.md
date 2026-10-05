@@ -23,6 +23,17 @@ npm test             # API tests: setup, sign-in, approval flow, permissions
 
 ## Deploy
 
+### Docker Compose
+
+```bash
+cd asset-management
+docker compose up -d --build     # http://localhost:3000
+```
+
+Data is kept in the `assetflow-data` volume. Behind HTTPS, start it with
+`COOKIE_SECURE=true TRUST_PROXY=true docker compose up -d`. Use `PORT=8080`
+to change the port on your machine.
+
 ### Docker
 
 ```bash
