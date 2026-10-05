@@ -1,0 +1,15 @@
+{
+  "name": "assetflow",
+  "version": "1.0.0",
+  "description": "Asset management, purchase orders and approvals for users, managers and admins.",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "UNLICENSED"
+}

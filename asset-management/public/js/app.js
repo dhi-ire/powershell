@@ -2,47 +2,67 @@
    App — routing, views, and workflow actions.
    ============================================================ */
 
-const S = () => Store.state;
-const me = () => S().users.find((u) => u.id === S().currentUserId && u.active !== false) || null;
-const can = (perm) => !!me() && ROLES[me().role].can.includes(perm);
+const { ROLES, PO_ADMIN_THRESHOLD, MIN_PASSWORD, CATEGORIES, REQUEST_STATUS, PO_STATUS, ASSET_STATUS, poTotal } = Rules;
+
+/* Data the server sent for the signed-in person (null when signed out). */
+let STATE = null;
+let needsSetup = false;
+
+const S = () => STATE;
+const me = () => (STATE ? STATE.me : null);
+const can = (perm) => Rules.can(me(), perm);
 const userById = (id) => S().users.find((u) => u.id === id);
 const nameOf = (id) => userById(id)?.name || '—';
 const initials = (name) => name.split(' ').map((p) => p[0]).slice(0, 2).join('').toUpperCase();
-const teamIds = (u) => S().users.filter((x) => x.managerId === u.id).map((x) => x.id);
+const teamIds = (u) => Rules.teamIds(S(), u);
+const visibleAssets = (u) => (u.role === 'admin' ? S().assets : Rules.visibleAssets(S(), u));
+const visibleRequests = (u) => Rules.visibleRequests(S(), u);
+const visiblePOs = (u) => Rules.visiblePOs(S(), u);
+const myQueue = (u) => Rules.myQueue(S(), u);
 
-/* ---------- Scoping: what each role can see ---------- */
-function scopeIds(u) {
-  if (u.role === 'admin') return null;               // null = everything
-  if (u.role === 'manager') return [u.id, ...teamIds(u)];
-  return [u.id];
+/* ---------- Formatting ---------- */
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
-function visibleAssets(u) {
-  const ids = scopeIds(u);
-  return ids ? S().assets.filter((a) => ids.includes(a.assignedTo)) : S().assets;
-}
-function visibleRequests(u) {
-  const ids = scopeIds(u);
-  return ids ? S().requests.filter((r) => ids.includes(r.requesterId)) : S().requests;
-}
-function visiblePOs(u) {
-  const ids = scopeIds(u);
-  return ids ? S().purchaseOrders.filter((p) => ids.includes(p.requesterId)) : S().purchaseOrders;
+const money = (n) => new Intl.NumberFormat('en-IE', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(n || 0);
+function timeAgo(iso) {
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
 }
 
-/* Items waiting on the current user. */
-function myQueue(u) {
-  const team = teamIds(u);
-  const reqs = [];
-  const pos = [];
-  if (u.role === 'manager') {
-    reqs.push(...S().requests.filter((r) => r.status === 'Pending' && team.includes(r.requesterId)));
-    pos.push(...S().purchaseOrders.filter((p) => p.status === 'Pending Manager' && team.includes(p.requesterId)));
+/* ---------- Server calls ---------- */
+async function api(path, body) {
+  const opts = { credentials: 'same-origin', headers: {} };
+  if (body !== undefined) {
+    opts.method = 'POST';
+    opts.headers = { 'Content-Type': 'application/json', 'X-Requested-With': 'AssetFlow' };
+    opts.body = JSON.stringify(body);
   }
-  if (u.role === 'admin') {
-    reqs.push(...S().requests.filter((r) => r.status === 'Pending' || r.status === 'Approved'));
-    pos.push(...S().purchaseOrders.filter((p) => ['Pending Manager', 'Pending Admin', 'Approved', 'Ordered'].includes(p.status)));
+  let res;
+  try { res = await fetch(path, opts); } catch { throw new Error('Can\'t reach the server. Check your connection and try again.'); }
+  let data = {};
+  try { data = await res.json(); } catch { /* empty body */ }
+  if (res.status === 401 && path.startsWith('/api/actions/')) { STATE = null; closeModal(); route(); }
+  if (!res.ok) throw new Error(data.error || 'Something went wrong. Try again.');
+  return data;
+}
+
+/* Run a server action, then redraw with the fresh data. */
+async function act(name, body) {
+  try {
+    const d = await api(`/api/actions/${name}`, body);
+    STATE = d.state;
+    closeModal();
+    route(false);
+    toast(d.message);
+    return true;
+  } catch (e) {
+    toast(e.message);
+    return false;
   }
-  return { reqs, pos, total: reqs.length + pos.length };
 }
 
 /* ---------- Status badges ---------- */
@@ -77,7 +97,7 @@ function route(scroll = true) {
   const u = me();
   const page = (location.hash.replace(/^#\/?/, '') || 'dashboard').split('?')[0];
   const root = document.getElementById('app');
-  if (!u) { root.innerHTML = viewLanding(); return; }
+  if (!u) { root.innerHTML = needsSetup ? viewSetup() : viewLanding(); return; }
   const allowed = [...NAV[u.role].map(([k]) => k), 'profile'];
   const key = allowed.includes(page) ? page : 'dashboard';
   root.innerHTML = shell(key, VIEWS[key](u));
@@ -107,28 +127,9 @@ function shell(active, content) {
    Landing — role picker, styled like a download page
    ============================================================ */
 function viewLanding() {
-  const info = {
-    user:    ['User', 'For employees who need equipment.', ['See assets assigned to you', 'Request new equipment', 'Fill purchase orders', 'Track approval status']],
-    manager: ['Manager', 'For team leads who approve spend.', ['Approve team requests', `Approve POs up to ${money(PO_ADMIN_THRESHOLD)}`, 'View team assets', 'Raise your own POs']],
-    admin:   ['Admin', 'For IT and procurement owners.', ['Manage the full inventory', `Final approval over ${money(PO_ADMIN_THRESHOLD)}`, 'Fulfil requests and receive POs', 'Add users, reset passwords']],
-  };
-  const demoCard = (acct) => {
-    const [title, desc, bullets] = info[acct.role];
-    return `
-      <div class="role-card ${acct.role === 'user' ? 'featured' : ''}">
-        <div class="role-icon">${ICON[acct.role]}</div>
-        <h3>${title}</h3>
-        <p>${desc}</p>
-        <ul>${bullets.map((b) => `<li>${b}</li>`).join('')}</ul>
-        <dl class="cred"><dt>Email</dt><dd class="mono">${esc(acct.email)}</dd><dt>Password</dt><dd class="mono">${esc(acct.password)}</dd></dl>
-        <button class="btn ${acct.role === 'user' ? 'btn-primary' : ''} btn-lg" data-action="demo-login" data-email="${esc(acct.email)}" data-password="${esc(acct.password)}">Sign in as ${title} →</button>
-      </div>`;
-  };
   return `
     <header class="nav"><div class="container nav-inner">
       <a class="logo" href="#"><span class="logo-mark">A</span>AssetFlow</a>
-      <nav class="nav-links"></nav>
-      <button class="btn btn-ghost btn-sm" data-action="reset">Reset demo data</button>
     </div></header>
     <main><div class="container">
       <section class="hero">
@@ -142,14 +143,11 @@ function viewLanding() {
         <p class="hint">Use your work email. Ask an admin if you need an account or a password reset.</p>
         <form class="form" id="login-form" novalidate>
           <label>Email<input id="login-email" name="email" type="email" autocomplete="username" required placeholder="you@company.com"></label>
-          <label>Password<input id="login-password" name="password" type="password" autocomplete="current-password" required placeholder="••••••••"></label>
+          <label>Password<input id="login-password" name="password" type="password" autocomplete="current-password" required></label>
           <p class="error-text" id="login-error" role="alert" hidden></p>
           <button class="btn btn-primary btn-lg" type="submit">Sign in</button>
         </form>
       </section>
-
-      <div class="section-title" style="margin-top:72px"><h2>Try a demo account</h2><p>One sign-in for each role. Every other sample person uses the same password as their role.</p></div>
-      <section class="role-grid" style="margin-top:0">${DEMO_ACCOUNTS.map(demoCard).join('')}</section>
 
       <div class="section-title"><h2>How approvals flow</h2><p>One pipeline for equipment requests and purchase orders.</p></div>
       <section class="flow">
@@ -159,7 +157,32 @@ function viewLanding() {
         <div class="flow-step"><div class="n">4</div><h4>Fulfil</h4><p>Admin assigns stock, or orders and receives it into inventory.</p></div>
       </section>
     </div></main>
-    <footer class="footer"><div class="container"><span>© ${new Date().getFullYear()} AssetFlow</span><span>Demo data is stored in this browser only.</span></div></footer>`;
+    <footer class="footer"><div class="container"><span>© ${new Date().getFullYear()} AssetFlow</span><span>Asset management · Purchase orders · Approvals</span></div></footer>`;
+}
+
+/* First run: no users yet, so create the first admin. */
+function viewSetup() {
+  return `
+    <header class="nav"><div class="container nav-inner"><a class="logo" href="#"><span class="logo-mark">A</span>AssetFlow</a></div></header>
+    <main><div class="container">
+      <section class="hero" style="padding-bottom:0">
+        <span class="eyebrow"><span class="dot"></span>First-time setup</span>
+        <h1>Create the <em>admin</em> account.</h1>
+        <p class="lead">This account manages users, assets and final approvals. You'll add everyone else from the Users page.</p>
+      </section>
+      <section class="login-card card" aria-labelledby="setup-title">
+        <h2 id="setup-title">Admin details</h2>
+        <form class="form" id="setup-form" novalidate>
+          <label>Full name<input id="setup-name" name="name" required autocomplete="name"></label>
+          <label>Work email<input id="setup-email" name="email" type="email" required autocomplete="username"></label>
+          <label>Department<input id="setup-dept" name="dept" value="IT" required></label>
+          <label>Password<input id="setup-password" name="password" type="password" required minlength="${MIN_PASSWORD}" autocomplete="new-password"></label>
+          <p class="hint">At least ${MIN_PASSWORD} characters.</p>
+          <p class="error-text" id="setup-error" role="alert" hidden></p>
+          <button class="btn btn-primary btn-lg" type="submit">Create admin and sign in</button>
+        </form>
+      </section>
+    </div></main>`;
 }
 
 /* ============================================================
@@ -353,12 +376,6 @@ function requestForm() {
   </form>`;
 }
 
-function canActOnRequest(u, r) {
-  if (r.status === 'Pending') return u.role === 'admin' || (u.role === 'manager' && teamIds(u).includes(r.requesterId));
-  if (r.status === 'Approved') return can('fulfill:request');
-  return false;
-}
-
 /* ============================================================
    Purchase orders
    ============================================================ */
@@ -428,23 +445,6 @@ function updatePoTotal() {
   route.textContent = steps.length ? `Approval route: ${steps.join(' → ')}` : 'Auto-approved on submit';
 }
 
-/* Initial status for a new PO based on who submits it and how much it costs. */
-function initialPoStatus(u, total) {
-  if (u.role === 'user') return 'Pending Manager';
-  if (u.role === 'manager') return total > PO_ADMIN_THRESHOLD ? 'Pending Admin' : 'Approved';
-  return 'Approved';
-}
-
-function poActions(u, p) {
-  const team = teamIds(u);
-  const acts = [];
-  if (p.status === 'Pending Manager' && (u.role === 'admin' || (u.role === 'manager' && team.includes(p.requesterId)))) acts.push('approve', 'reject');
-  if (p.status === 'Pending Admin' && can('approve:po-admin')) acts.push('approve', 'reject');
-  if (p.status === 'Approved' && can('order:po')) acts.push('order');
-  if (p.status === 'Ordered' && can('receive:po')) acts.push('receive');
-  return acts;
-}
-
 /* ============================================================
    Users (admin)
    ============================================================ */
@@ -512,24 +512,17 @@ function formData(id) {
   return Object.fromEntries(new FormData(form).entries());
 }
 
-function commit(msg) {
-  Store.save();
-  closeModal();
-  route();
-  if (msg) toast(msg);
-}
-
 /* ---------- Detail modals ---------- */
 function showRequest(id) {
   const r = S().requests.find((x) => x.id === id);
   const u = me();
-  const actionable = canActOnRequest(u, r);
+  const action = Rules.requestAction(S(), u, r);
   let foot = '';
   let extra = '';
-  if (actionable && r.status === 'Pending') {
+  if (action === 'decide') {
     extra = '<label class="form" style="margin-top:16px"><span style="font-size:13px;color:var(--muted)">Note (optional)</span><input class="input" id="decision-note" placeholder="Add a comment for the requester"></label>';
     foot = `<button class="btn btn-bad" data-action="reject-request" data-id="${r.id}">Reject</button><button class="btn btn-ok" data-action="approve-request" data-id="${r.id}">Approve</button>`;
-  } else if (actionable && r.status === 'Approved') {
+  } else if (action === 'fulfil') {
     const stock = S().assets.filter((a) => a.status === 'Available' && a.category === r.category);
     extra = stock.length
       ? `<label class="form" style="margin-top:16px"><span style="font-size:13px;color:var(--muted)">Assign from stock</span><select class="input" id="fulfil-asset">${stock.map((a) => `<option value="${a.id}">${esc(a.tag)} · ${esc(a.name)}</option>`).join('')}</select></label>`
@@ -544,7 +537,7 @@ function showRequest(id) {
 
 function showPO(id) {
   const p = S().purchaseOrders.find((x) => x.id === id);
-  const acts = poActions(me(), p);
+  const acts = Rules.poActions(S(), me(), p);
   const label = { approve: ['btn-ok', 'Approve'], reject: ['btn-bad', 'Reject'], order: ['btn-primary', 'Mark as ordered'], receive: ['btn-primary', 'Receive into inventory'] };
   const foot = acts.map((a) => `<button class="btn ${label[a][0]}" data-action="po-${a}" data-id="${p.id}">${label[a][1]}</button>`).join('');
   const note = acts.includes('approve') ? '<label class="form" style="margin-top:16px"><span style="font-size:13px;color:var(--muted)">Note (optional)</span><input class="input" id="decision-note" placeholder="Add a comment"></label>' : '';
@@ -565,53 +558,59 @@ const noteValue = () => document.getElementById('decision-note')?.value.trim() |
 /* ============================================================
    Actions
    ============================================================ */
-const auth = { failures: 0, lockedUntil: 0 };
+const showError = (id, msg) => { const e = document.getElementById(id); e.textContent = msg; e.hidden = false; };
+
+function signedIn(state, message) {
+  STATE = state;
+  needsSetup = false;
+  filters = emptyFilters();
+  location.hash = '#dashboard';
+  route();
+  if (message) toast(message);
+}
 
 const ACTIONS = {
   async login() {
-    const email = document.getElementById('login-email').value.trim().toLowerCase();
+    const email = document.getElementById('login-email').value.trim();
     const password = document.getElementById('login-password').value;
-    const showError = (msg) => { const e = document.getElementById('login-error'); e.textContent = msg; e.hidden = false; };
-    if (Date.now() < auth.lockedUntil) return showError(`Too many attempts. Try again in ${Math.ceil((auth.lockedUntil - Date.now()) / 1000)} seconds.`);
-    if (!email || !password) return showError('Enter your email and password.');
-    const user = S().users.find((u) => u.email.toLowerCase() === email);
-    if (!user || !(await checkPassword(user, password))) {
-      auth.failures += 1;
-      if (auth.failures >= 5) { auth.lockedUntil = Date.now() + 30000; auth.failures = 0; }
-      return showError('That email and password don\'t match. Check both and try again.');
-    }
-    if (user.active === false) return showError('This account is disabled. Ask an admin to turn it back on.');
-    auth.failures = 0;
-    filters = emptyFilters();
-    S().currentUserId = user.id;
-    Store.save();
-    location.hash = '#dashboard';
-    route();
-    toast(`Signed in as ${user.name}`);
+    if (!email || !password) return showError('login-error', 'Enter your email and password.');
+    try {
+      const d = await api('/api/login', { email, password });
+      signedIn(d.state, `Signed in as ${d.state.me.name}`);
+    } catch (e) { showError('login-error', e.message); }
   },
-  'demo-login'(el) {
-    document.getElementById('login-email').value = el.dataset.email;
-    document.getElementById('login-password').value = el.dataset.password;
-    ACTIONS.login();
+  async setup() {
+    const body = {
+      name: document.getElementById('setup-name').value,
+      email: document.getElementById('setup-email').value,
+      dept: document.getElementById('setup-dept').value,
+      password: document.getElementById('setup-password').value,
+    };
+    try {
+      const d = await api('/api/setup', body);
+      signedIn(d.state, d.message);
+    } catch (e) { showError('setup-error', e.message); }
   },
   async 'change-password'() {
-    const u = me();
-    const cur = document.getElementById('pw-current').value;
+    const current = document.getElementById('pw-current').value;
     const next = document.getElementById('pw-new').value;
-    const confirmPw = document.getElementById('pw-confirm').value;
-    const showError = (msg) => { const e = document.getElementById('pw-error'); e.textContent = msg; e.hidden = false; };
-    if (!(await checkPassword(u, cur))) return showError('Your current password is wrong.');
-    if (next.length < MIN_PASSWORD) return showError(`Use at least ${MIN_PASSWORD} characters for the new password.`);
-    if (next !== confirmPw) return showError('The new passwords don\'t match.');
-    await setPassword(u, next);
-    commit('Password updated');
+    if (next.length < MIN_PASSWORD) return showError('pw-error', `Use at least ${MIN_PASSWORD} characters for the new password.`);
+    if (next !== document.getElementById('pw-confirm').value) return showError('pw-error', 'The new passwords don\'t match.');
+    try {
+      const d = await api('/api/actions/changePassword', { current, next });
+      STATE = d.state;
+      route();
+      toast(d.message);
+    } catch (e) { showError('pw-error', e.message); }
   },
-  logout() { filters = emptyFilters(); S().currentUserId = null; Store.save(); location.hash = ''; route(); toast('Signed out'); },
-  reset() {
-    openModal('Reset demo data?', '<p style="margin:0;color:var(--muted)">All assets, requests, purchase orders and users go back to the sample data. This can\'t be undone.</p>',
-      '<button class="btn" data-action="close-modal">Cancel</button><button class="btn btn-bad" data-action="confirm-reset">Reset data</button>');
+  async logout() {
+    try { await api('/api/logout', {}); } catch { /* signed out locally anyway */ }
+    STATE = null;
+    filters = emptyFilters();
+    location.hash = '';
+    route();
+    toast('Signed out');
   },
-  'confirm-reset'() { Store.reset(); commit('Demo data reset'); },
   'close-modal': closeModal,
 
   /* Requests */
@@ -620,26 +619,12 @@ const ACTIONS = {
   },
   'submit-request'() {
     const d = formData('request-form'); if (!d) return;
-    const u = me();
-    const auto = u.role !== 'user';   // managers/admins skip manager review
-    S().requests.push({
-      id: uid(), number: Store.nextId('request', 'REQ'), requesterId: u.id, ...d,
-      status: auto ? 'Approved' : 'Pending', createdAt: now(),
-      history: [{ by: u.id, action: 'Submitted', at: now() }, ...(auto ? [{ by: u.id, action: 'Auto-approved', at: now() }] : [])],
-    });
-    commit(auto ? 'Request submitted and approved' : 'Request sent to your manager');
+    return act('submitRequest', d);
   },
   'view-request'(el) { showRequest(el.dataset.id); },
-  'approve-request'(el) { decideRequest(el.dataset.id, 'Approved'); },
-  'reject-request'(el) { decideRequest(el.dataset.id, 'Rejected'); },
-  'fulfil-request'(el) {
-    const r = S().requests.find((x) => x.id === el.dataset.id);
-    const a = S().assets.find((x) => x.id === document.getElementById('fulfil-asset').value);
-    Object.assign(a, { status: 'Assigned', assignedTo: r.requesterId });
-    r.status = 'Fulfilled';
-    r.history.push({ by: me().id, action: 'Fulfilled', at: now(), note: `Assigned ${a.tag}` });
-    commit(`${a.tag} assigned to ${nameOf(r.requesterId)}`);
-  },
+  'approve-request'(el) { return act('decideRequest', { id: el.dataset.id, decision: 'approve', note: noteValue() }); },
+  'reject-request'(el) { return act('decideRequest', { id: el.dataset.id, decision: 'reject', note: noteValue() }); },
+  'fulfil-request'(el) { return act('fulfilRequest', { id: el.dataset.id, assetId: document.getElementById('fulfil-asset').value }); },
 
   /* Purchase orders */
   'new-po'() {
@@ -651,67 +636,26 @@ const ACTIONS = {
     updatePoTotal();
   },
   'remove-line'(el) {
-    const lines = document.querySelectorAll('#po-lines .line');
-    if (lines.length > 1) el.closest('.line').remove();
+    if (document.querySelectorAll('#po-lines .line').length > 1) el.closest('.line').remove();
     updatePoTotal();
   },
   'submit-po'() {
     const d = formData('po-form'); if (!d) return;
-    const items = [...document.querySelectorAll('#po-lines .line')].map((ln) => ({
-      desc: ln.querySelector('[name=desc]').value.trim(),
-      qty: Number(ln.querySelector('[name=qty]').value),
-      unitPrice: Number(ln.querySelector('[name=unitPrice]').value),
-    }));
-    const u = me();
-    const po = { id: uid(), number: Store.nextId('po', 'PO'), requesterId: u.id, vendor: d.vendor, category: d.category,
-      costCenter: d.costCenter, neededBy: d.neededBy, justification: d.justification, items, createdAt: now(),
-      history: [{ by: u.id, action: 'Submitted', at: now() }] };
-    po.status = initialPoStatus(u, poTotal(po));
-    if (u.role !== 'user') po.history.push({ by: u.id, action: po.status === 'Approved' ? 'Auto-approved' : 'Manager approved', at: now() });
-    S().purchaseOrders.push(po);
-    commit(`${po.number} submitted · ${po.status}`);
+    const body = {
+      vendor: d.vendor, category: d.category, costCenter: d.costCenter, neededBy: d.neededBy, justification: d.justification,
+      items: [...document.querySelectorAll('#po-lines .line')].map((ln) => ({
+        desc: ln.querySelector('[name=desc]').value.trim(),
+        qty: Number(ln.querySelector('[name=qty]').value),
+        unitPrice: Number(ln.querySelector('[name=unitPrice]').value),
+      })),
+    };
+    return act('submitPO', body);
   },
   'view-po'(el) { showPO(el.dataset.id); },
-  'po-approve'(el) {
-    const p = S().purchaseOrders.find((x) => x.id === el.dataset.id);
-    const note = noteValue();
-    if (p.status === 'Pending Manager') {
-      p.status = poTotal(p) > PO_ADMIN_THRESHOLD ? 'Pending Admin' : 'Approved';
-      p.history.push({ by: me().id, action: 'Manager approved', at: now(), note });
-    } else {
-      p.status = 'Approved';
-      p.history.push({ by: me().id, action: 'Admin approved', at: now(), note });
-    }
-    commit(`${p.number} → ${p.status}`);
-  },
-  'po-reject'(el) {
-    const p = S().purchaseOrders.find((x) => x.id === el.dataset.id);
-    p.status = 'Rejected';
-    p.history.push({ by: me().id, action: 'Rejected', at: now(), note: noteValue() });
-    commit(`${p.number} rejected`);
-  },
-  'po-order'(el) {
-    const p = S().purchaseOrders.find((x) => x.id === el.dataset.id);
-    p.status = 'Ordered';
-    p.history.push({ by: me().id, action: 'Ordered', at: now() });
-    commit(`${p.number} marked as ordered`);
-  },
-  'po-receive'(el) {
-    const p = S().purchaseOrders.find((x) => x.id === el.dataset.id);
-    let added = 0;
-    if (p.category !== 'Software') {
-      p.items.forEach((i) => {
-        for (let n = 0; n < Math.min(i.qty, 50); n++) {
-          S().assets.push({ id: uid(), tag: Store.nextId('asset', 'AST'), name: i.desc, category: p.category || 'Peripheral',
-            serial: '', status: 'Available', assignedTo: null, location: 'IT Store', cost: i.unitPrice, purchaseDate: new Date().toISOString().slice(0, 10) });
-          added++;
-        }
-      });
-    }
-    p.status = 'Received';
-    p.history.push({ by: me().id, action: 'Received', at: now(), note: added ? `${added} asset(s) added to inventory` : undefined });
-    commit(`${p.number} received · ${added} asset(s) added`);
-  },
+  'po-approve'(el) { return act('poApprove', { id: el.dataset.id, note: noteValue() }); },
+  'po-reject'(el) { return act('poReject', { id: el.dataset.id, note: noteValue() }); },
+  'po-order'(el) { return act('poOrder', { id: el.dataset.id }); },
+  'po-receive'(el) { return act('poReceive', { id: el.dataset.id }); },
 
   /* Assets (admin) */
   'new-asset'() {
@@ -723,17 +667,7 @@ const ACTIONS = {
   },
   'save-asset'(el) {
     const d = formData('asset-form'); if (!d) return;
-    d.cost = Number(d.cost) || 0;
-    d.assignedTo = d.assignedTo || null;
-    if (d.assignedTo && d.status === 'Available') d.status = 'Assigned';
-    if (!d.assignedTo && d.status === 'Assigned') d.status = 'Available';
-    if (el.dataset.id) {
-      Object.assign(S().assets.find((x) => x.id === el.dataset.id), d);
-      commit('Asset updated');
-    } else {
-      S().assets.push({ id: uid(), tag: Store.nextId('asset', 'AST'), ...d });
-      commit('Asset added');
-    }
+    return act('saveAsset', { ...d, id: el.dataset.id || undefined });
   },
 
   /* Users (admin) */
@@ -744,39 +678,11 @@ const ACTIONS = {
     const u = userById(el.dataset.id);
     openModal(`Edit ${u.name}`, userForm(u), `<button class="btn" data-action="close-modal">Cancel</button><button class="btn btn-primary" data-action="save-user" data-id="${u.id}">Save changes</button>`);
   },
-  async 'save-user'(el) {
+  'save-user'(el) {
     const d = formData('user-form'); if (!d) return;
-    const id = el.dataset.id;
-    const { password } = d;
-    delete d.password;
-    d.email = d.email.trim().toLowerCase();
-    d.managerId = d.managerId || null;
-    d.active = d.active === 'true';
-    if (S().users.some((u) => u.email.toLowerCase() === d.email && u.id !== id)) { toast('Another user already has that email'); return; }
-    if (password && password.length < MIN_PASSWORD) { toast(`Passwords need at least ${MIN_PASSWORD} characters`); return; }
-    if (id) {
-      if (id === me().id && d.role !== 'admin') { toast('You can\'t remove your own admin role'); return; }
-      if (id === me().id && !d.active) { toast('You can\'t disable your own account'); return; }
-      const user = userById(id);
-      Object.assign(user, d);
-      if (password) await setPassword(user, password);
-      commit(password ? 'User updated and password reset' : 'User updated');
-    } else {
-      S().counters.user += 1;
-      const user = { id: `u${S().counters.user}`, ...d };
-      await setPassword(user, password);
-      S().users.push(user);
-      commit(`${user.name} can now sign in`);
-    }
+    return act('saveUser', { ...d, id: el.dataset.id || undefined });
   },
 };
-
-function decideRequest(id, status) {
-  const r = S().requests.find((x) => x.id === id);
-  r.status = status;
-  r.history.push({ by: me().id, action: status, at: now(), note: noteValue() });
-  commit(`${r.number} ${status.toLowerCase()}`);
-}
 
 /* ============================================================
    Wiring
@@ -785,7 +691,13 @@ document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-action]');
   if (!el) return;
   const fn = ACTIONS[el.dataset.action];
-  if (fn) { e.preventDefault(); fn(el); }
+  if (!fn || el.disabled) return;
+  e.preventDefault();
+  const pending = fn(el);
+  if (pending && typeof pending.then === 'function' && el.tagName === 'BUTTON') {
+    el.disabled = true;
+    pending.finally(() => { el.disabled = false; });
+  }
 });
 
 document.addEventListener('input', (e) => {
@@ -806,10 +718,20 @@ document.addEventListener('submit', (e) => {
   e.preventDefault();
   if (e.target.id === 'login-form') ACTIONS.login();
   if (e.target.id === 'password-form') ACTIONS['change-password']();
+  if (e.target.id === 'setup-form') ACTIONS.setup();
 });
 
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
 window.addEventListener('hashchange', route);
 
-Store.load();
-route();
+/* Boot: ask the server who is signed in. */
+(async () => {
+  try {
+    const d = await api('/api/session');
+    needsSetup = d.needsSetup;
+    STATE = d.state;
+  } catch (e) {
+    toast(e.message);
+  }
+  route();
+})();

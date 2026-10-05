@@ -166,9 +166,6 @@ main { padding: 40px 0 96px; }
 .login-card h2 { margin: 0; font-size: 24px; letter-spacing: -0.02em; }
 .login-card .hint { margin: 0 0 12px; }
 .error-text { margin: 0; padding: 10px 14px; border-radius: var(--radius-sm); font-size: 14px; color: var(--bad); background: rgba(248, 113, 113, .1); border: 1px solid rgba(248, 113, 113, .3); }
-.cred { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; padding: 12px 14px; border-radius: var(--radius-sm); background: var(--bg); border: 1px dashed var(--border-strong); font-size: 13px; }
-.cred dt { color: var(--faint); }
-.cred dd { margin: 0; overflow-wrap: anywhere; }
 a.avatar:hover, .avatar-active { border-color: var(--accent); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 

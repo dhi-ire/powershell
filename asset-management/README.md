@@ -1,82 +1,109 @@
 # AssetFlow — Asset Management, Purchase Orders & Approvals
 
-A dependency-free web app (HTML/CSS/JS) for tracking assets, filling purchase
-orders and routing requests through approvals. Open `index.html` in a browser —
-no build step. Demo data is stored in `localStorage` (use **Reset demo data** on
-the landing page to start over).
+A web app for tracking company assets, requesting equipment, filling purchase
+orders and routing them through approvals. It has three roles: **user**,
+**manager** and **admin**.
 
-## Sign in
+It runs on Node.js 18+ and has no npm dependencies. Data is stored in one JSON
+file on the server.
 
-Everyone signs in with their own email and password. Demo accounts:
+## Run it
 
-| Role    | Email               | Password      |
-|---------|---------------------|---------------|
-| User    | priya@company.com   | `User@123`    |
-| Manager | marco@company.com   | `Manager@123` |
-| Admin   | aisha@company.com   | `Admin@123`   |
-
-The other sample people use their role's password (e.g. liam@company.com / `User@123`).
-
-- Admins add users with a starting password, reset passwords, change roles and
-  disable accounts (disabled accounts can't sign in). Admins can't demote or
-  disable themselves.
-- Every user can change their own password on the **Profile** page (click the avatar).
-- Five wrong passwords in a row lock sign-in for 30 seconds.
-- Passwords are stored as salted SHA-256 hashes. This is demo-grade only: with
-  no server, anyone with browser access can edit the stored data. A real
-  deployment needs server-side authentication.
-
-## Structure
-
-```
-asset-management/
-├── index.html        # Entry point
-├── css/styles.css    # Dark UI theme (tokens at :root)
-└── js/
-    ├── data.js       # Roles/permissions, seed data, Store (persistence), helpers
-    └── app.js        # Router, views, workflow actions
+```bash
+cd asset-management
+npm start            # http://localhost:3000
 ```
 
-`data.js` is the only place that touches storage — replace `Store` with API
-calls to plug in a real backend.
+The first time you open it, it asks you to create the **admin account**. The
+admin then adds everyone else from the **Users** page.
+
+```bash
+npm test             # API tests: setup, sign-in, approval flow, permissions
+```
+
+## Deploy
+
+### Docker
+
+```bash
+docker build -t assetflow ./asset-management
+docker run -d --name assetflow -p 3000:3000 \
+  -v assetflow-data:/data \
+  -e COOKIE_SECURE=true -e TRUST_PROXY=true \
+  assetflow
+```
+
+Keep the `/data` volume: it holds the database (`db.json`). Back it up like any
+other database file.
+
+### Any Node host (VM, Render, Railway, Fly.io…)
+
+- Start command: `node server.js`
+- Mount persistent storage and point `DATA_DIR` at it. Without persistent
+  storage, data is lost on every redeploy.
+- Run a single instance. The JSON file store does not support several
+  instances writing at once.
+
+### Settings
+
+| Variable        | Default  | Purpose |
+|-----------------|----------|---------|
+| `PORT`          | `3000`   | Port to listen on |
+| `DATA_DIR`      | `./data` | Folder for `db.json` |
+| `COOKIE_SECURE` | `false`  | Set `true` when served over HTTPS (required in production) |
+| `TRUST_PROXY`   | `false`  | Set `true` behind a reverse proxy or load balancer, so sign-in throttling uses the real client IP |
+
+Always serve the app over HTTPS in production (a reverse proxy such as
+nginx or Caddy, or your host's built-in TLS).
+
+## Security
+
+- Passwords are hashed with scrypt. Hashes never leave the server.
+- Sessions use a random token in an `HttpOnly`, `SameSite=Lax` cookie and last
+  7 days. The server stores only a hash of each token.
+- Every change is checked on the server against the signed-in person's role.
+- Five wrong passwords for an email from one IP lock sign-in for 5 minutes.
+- Resetting a password or disabling a user signs them out everywhere.
+- Changes must be JSON requests with an app header, which blocks cross-site
+  form posts. Responses send a strict Content-Security-Policy.
 
 ## Roles
 
 | Role        | Sees                          | Can do |
 |-------------|-------------------------------|--------|
-| **User**    | Own assets, requests, POs     | Request equipment, fill POs |
+| **User**    | Own assets, requests, POs     | Request equipment, fill POs, change own password |
 | **Manager** | Own + direct reports' items   | Everything a user can, plus approve/reject team requests and POs |
-| **Admin**   | Everything                    | Final PO approval, order/receive POs, fulfil requests from stock, manage assets & users |
+| **Admin**   | Everything                    | Final PO approval, order/receive POs, fulfil requests from stock, manage assets, add users, reset passwords, disable accounts |
 
-Permissions are defined once in `ROLES` (`js/data.js`); the Users page renders
-the full permission matrix.
+A user's manager is set with **Reports to** on the Users page.
 
 ## Workflows
 
-**Asset request**
+**Equipment request:** user submits → manager approves → admin assigns an
+asset from stock → fulfilled. Requests from managers and admins are approved
+automatically.
+
+**Purchase order:** user fills it in → manager approves → orders over
+**€5,000** also need admin approval → ordered → received. Receiving adds one
+asset per unit to stock. The threshold is `PO_ADMIN_THRESHOLD` in
+`public/js/rules.js`.
+
+## Structure
 
 ```
-User submits → Pending → Manager approves → Approved → Admin assigns stock → Fulfilled
-                        ↘ Rejected
+asset-management/
+├── server.js          # HTTP server: static files + JSON API
+├── lib/
+│   ├── actions.js     # Every data change, with permission checks and validation
+│   ├── auth.js        # Password hashing, sessions, sign-in throttling
+│   └── db.js          # JSON file storage (atomic writes)
+├── public/
+│   ├── index.html
+│   ├── css/styles.css
+│   └── js/
+│       ├── rules.js   # Roles and workflow rules, shared by server and browser
+│       └── app.js     # Browser UI
+├── test/api.test.js
+├── Dockerfile
+└── package.json
 ```
-Requests raised by a manager or admin are auto-approved.
-
-**Purchase order**
-
-```
-User fills PO → Pending Manager → (total > €5,000) → Pending Admin → Approved → Ordered → Received
-                              ↘ (total ≤ €5,000) ─────────────────↗
-Any approval step can → Rejected
-```
-- Threshold is `PO_ADMIN_THRESHOLD` in `js/data.js`.
-- Receiving a PO adds one inventory asset per unit (status *Available*), ready to
-  fulfil requests.
-
-## Data model
-
-- **User** `id, name, email, role, dept, managerId`
-- **Asset** `id, tag, name, category, serial, status (Available|Assigned|Maintenance|Retired), assignedTo, location, cost, purchaseDate`
-- **Request** `id, number, requesterId, category, item, reason, priority, status, history[]`
-- **PurchaseOrder** `id, number, requesterId, vendor, category, costCenter, neededBy, justification, items[{desc, qty, unitPrice}], status, history[]`
-
-Every request and PO keeps an audit `history` of `{by, action, at, note}`.
