@@ -1,0 +1,19 @@
+services:
+  assetflow:
+    build: .
+    image: assetflow:latest
+    container_name: assetflow
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      PORT: 3000
+      DATA_DIR: /data
+      # Set both to "true" when the app is served over HTTPS behind a reverse proxy.
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+    volumes:
+      - assetflow-data:/data
+
+volumes:
+  assetflow-data:
