@@ -271,7 +271,8 @@ function viewApprovals(u) {
 /* ============================================================
    Assets
    ============================================================ */
-const filters = { assets: { q: '', status: '', category: '' }, requests: { status: '' }, pos: { status: '' } };
+const emptyFilters = () => ({ assets: { q: '', status: '', category: '' }, requests: { status: '' }, pos: { status: '' } });
+let filters = emptyFilters();
 
 function viewAssets(u) {
   const f = filters.assets;
@@ -581,6 +582,7 @@ const ACTIONS = {
     }
     if (user.active === false) return showError('This account is disabled. Ask an admin to turn it back on.');
     auth.failures = 0;
+    filters = emptyFilters();
     S().currentUserId = user.id;
     Store.save();
     location.hash = '#dashboard';
@@ -604,7 +606,7 @@ const ACTIONS = {
     await setPassword(u, next);
     commit('Password updated');
   },
-  logout() { S().currentUserId = null; Store.save(); location.hash = ''; route(); toast('Signed out'); },
+  logout() { filters = emptyFilters(); S().currentUserId = null; Store.save(); location.hash = ''; route(); toast('Signed out'); },
   reset() {
     openModal('Reset demo data?', '<p style="margin:0;color:var(--muted)">All assets, requests, purchase orders and users go back to the sample data. This can\'t be undone.</p>',
       '<button class="btn" data-action="close-modal">Cancel</button><button class="btn btn-bad" data-action="confirm-reset">Reset data</button>');
